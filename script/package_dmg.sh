@@ -17,6 +17,24 @@ APP="$STAGING/ztype.app"
 RESOURCES="$APP/Contents/Resources"
 mkdir -p "$APP/Contents/MacOS" "$RESOURCES/engine" "$RESOURCES/licenses"
 cp "$BIN/ztype" "$APP/Contents/MacOS/ztype"
+STRIP_TOOL="${ZTYPE_STRIP_TOOL:-}"
+if [[ -z "$STRIP_TOOL" ]]; then
+    for tool in "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin/strip" \
+                /Library/Developer/CommandLineTools/usr/bin/strip; do
+        if [[ -x "$tool" ]]; then STRIP_TOOL="$tool"; break; fi
+    done
+fi
+if [[ -z "$STRIP_TOOL" || ! -x "$STRIP_TOOL" ]]; then
+    printf 'No native strip tool available; install Xcode Command Line Tools.\n' >&2
+    exit 1
+fi
+"$STRIP_TOOL" -S "$APP/Contents/MacOS/ztype"
+python3 -c '
+from pathlib import Path
+import sys
+if (str(Path.home()) + "/").encode() in Path(sys.argv[1]).read_bytes():
+    raise SystemExit("Refusing to publish a binary containing local home-directory paths")
+' "$APP/Contents/MacOS/ztype"
 cp Resources/Info.plist "$APP/Contents/"
 cp Resources/AppIcon.icns Resources/AppIcon.png Resources/ThirdPartyNotices.md \
    Resources/runtime-assets.json LICENSE "$RESOURCES/"

@@ -4,3 +4,4 @@
 *.py text eol=lf
 *.png binary
 *.icns binary
+Resources/licenses/* -text
