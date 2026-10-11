@@ -1,0 +1,15 @@
+{
+  "runtime": {
+    "tag": "b11429",
+    "asset": "llama-b11429-bin-macos-arm64.tar.gz",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11429/llama-b11429-bin-macos-arm64.tar.gz",
+    "sha256": "740288ec6887be94280a5dfa25b5e23a78285cab104519e6c7e218904ee82459"
+  },
+  "model": {
+    "repo": "Qwen/Qwen3-1.7B-GGUF",
+    "revision": "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+    "file": "Qwen3-1.7B-Q8_0.gguf",
+    "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    "license": "Apache-2.0"
+  }
+}

@@ -1,0 +1,23 @@
+ztype
+A free, open-source alternative to Cotypist for Mac.
+
+Requires Apple Silicon and macOS 14 or later.
+
+1. Drag ztype.app to Applications.
+2. Launch the installed copy, not the copy inside this disk image.
+3. Enable cross-app completion and grant Accessibility and Input Monitoring.
+4. Check that Tab takeover is available in ztype settings.
+
+The local model and inference runtime are included.
+Tab accepts one word. Option+Tab accepts the remaining suggestion.
+Consecutive Tabs keep the same suggestion. New input starts a new prediction.
+
+This initial public build is ad-hoc signed and has not been notarized by Apple.
+macOS may block it on first launch. Verify the trusted download and its SHA-256
+before opening it. Do not disable Gatekeeper. Ad-hoc updates may require
+regranting Accessibility and Input Monitoring permission.
+
+Source, detailed installation notes, license and limitations:
+https://github.com/xiaohei210509/ztype
+
+ztype is independent and is not affiliated with Cotypist.
