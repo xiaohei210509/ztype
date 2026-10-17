@@ -14,6 +14,10 @@ struct AccessibilityNotificationLedger<Element> {
     private var entries: [Entry] = []
     let equal: (Element, Element) -> Bool
 
+    init(equal: @escaping (Element, Element) -> Bool) {
+        self.equal = equal
+    }
+
     mutating func register(_ name: String, on element: Element,
                            add: () -> AXError) -> Outcome {
         if let existing = entries.first(where: { $0.name == name && equal($0.element, element) }) {
