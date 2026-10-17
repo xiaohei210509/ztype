@@ -16,6 +16,35 @@ struct LocalAcceptanceTests {
         )
     }
 
+    @Test func chineseTabsConsumeTheOriginalCandidateWithoutRequestingPrediction() {
+        var current = snapshot("明天我们会")
+        let model = AppModel()
+        defer { model.shutdown() }
+        model.localCapture = { current }
+        model.localInsert = { text, _ in current = snapshot(current.context.before + text); return true }
+        let original = "制定解决方案，然后再讨论。"
+        model.recordLocalCandidate(original, snapshot: current)
+        var count = 0
+        while !model.suggestion.isEmpty, count < 40 {
+            #expect(model.accept(full: false, global: false))
+            model.localChanged()
+            count += 1
+        }
+        #expect(count > 2)
+        #expect(current.context.before == "明天我们会" + original)
+        #expect(model.predictionScheduleCount == 0)
+    }
+
+    @Test func displayedLatencyUsesTheWholePipelineAndOnlyTheLatestHundredSamples() {
+        let model = AppModel()
+        defer { model.shutdown() }
+        model.recordDisplayLatency(9000, inference: 100)
+        for sample in 1...100 { model.recordDisplayLatency(Double(sample), inference: 20) }
+        #expect(model.latency == 100)
+        #expect(model.inferenceLatency == 20)
+        #expect(model.p95 == 95)
+    }
+
     @Test func consecutiveLocalTabsKeepTheOriginalWordsAndDoNotSchedulePrediction() {
         var current = snapshot("hello ")
         let model = AppModel()

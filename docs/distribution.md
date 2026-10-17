@@ -26,7 +26,7 @@ download.
 
 ## Signing
 
-The initial release is **ad-hoc signed and not notarized**. This is not equivalent
+The public release is **ad-hoc signed and not notarized**. This is not equivalent
 to Developer ID distribution. Downloaded copies can be blocked by Gatekeeper,
 and ad-hoc updates may require regranting Accessibility and Input Monitoring
 permission. Never tell users to disable Gatekeeper or reset TCC.
@@ -35,14 +35,14 @@ permission. Never tell users to disable Gatekeeper or reset TCC.
 future packaging. The script does not discover or reuse a personal development
 certificate. Adding a Developer ID signature does not itself notarize the app;
 notarization and ticket stapling remain separate, unimplemented release steps.
-Do not describe the initial DMG as notarized.
+Do not describe the public DMG as notarized.
 
 ## Verify The Finished Image
 
 ```bash
-hdiutil verify dist/ztype-0.1.0-arm64.dmg
+hdiutil verify dist/ztype-0.1.3-arm64.dmg
 cd dist
-shasum -a 256 -c ztype-0.1.0-arm64.dmg.sha256
+shasum -a 256 -c ztype-0.1.3-arm64.dmg.sha256
 ```
 
 Inspect a read-only mounted copy with `codesign --verify --deep --strict` and

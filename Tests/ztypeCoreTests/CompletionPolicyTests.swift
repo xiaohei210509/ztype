@@ -30,6 +30,50 @@ struct CompletionPolicyTests {
         #expect(CompletionPolicy.nextWord(in: " more information.") == " more")
         #expect(CompletionPolicy.nextWord(in: "questions.") == "questions.")
     }
+    @Test func shortPrefixesAtNaturalBoundaries() {
+        for before in ["Hi,", "Hi ", "你好，", "Go!", "OK "] {
+            #expect(CompletionContext(before: before).eligible)
+        }
+        for before in ["", "h", "ab", "1 ", "🤔 ", "Hi,\n"] {
+            #expect(!CompletionContext(before: before).eligible)
+        }
+        #expect(!CompletionContext(before: "Hi,", after: "there").eligible)
+    }
+
+    @Test func chineseAcceptanceUsesWordsWithoutChangingTheCandidate() {
+        let original = "制定解决方案，然后明天下午再讨论。"
+        var remaining = original
+        var accepted = ""
+        var parts: [String] = []
+        while !remaining.isEmpty, parts.count < 40 {
+            let part = CompletionPolicy.nextWord(in: remaining)
+            #expect(!part.isEmpty)
+            #expect(remaining.hasPrefix(part))
+            parts.append(part)
+            accepted += part
+            remaining = String(remaining.dropFirst(part.count))
+        }
+        #expect(remaining.isEmpty)
+        #expect(accepted == original)
+        #expect(parts.count > 3)
+        #expect(parts.first != original)
+        #expect(!parts.contains("。"))
+        #expect(CompletionPolicy.nextWord(in: " 👩🏽‍💻").hasPrefix(" "))
+    }
+
+    @Test func mixedLanguageAcceptancePreservesLeadingSpaceAndAcronyms() {
+        let suggestion = " API 返回更多结果。"
+        #expect(CompletionPolicy.nextWord(in: suggestion) == " API")
+        let original = " 请确认 2028 年的计划。"
+        var remaining = original
+        var restored = ""
+        while !remaining.isEmpty {
+            let part = CompletionPolicy.nextWord(in: remaining)
+            restored += part
+            remaining = String(remaining.dropFirst(part.count))
+        }
+        #expect(restored == original)
+    }
     @Test func wordBudget() {
         #expect(CompletionPolicy.filter("one two three four", context: context, limit: 2) == "one two")
     }

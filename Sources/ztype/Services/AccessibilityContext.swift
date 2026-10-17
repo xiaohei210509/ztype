@@ -38,14 +38,14 @@ struct FieldSnapshot {
     }
 }
 
-enum ContextCaptureFailure {
+enum ContextCaptureFailure: Equatable {
     case noPermission, secureInput, composition, noApplication, ownApplication, excluded
     case noField, unsupportedField, secureField, disabledField, noSelection, selectedText
     case noText, noCharacterCount, noCaret, noVisibleBounds, offscreen
 
     var mayBeLayoutDelay: Bool {
         switch self {
-        case .noField, .noSelection, .noText, .noCharacterCount, .noCaret, .noVisibleBounds: return true
+        case .noField, .unsupportedField, .noSelection, .noText, .noCharacterCount, .noCaret, .noVisibleBounds: return true
         default: return false
         }
     }
@@ -75,18 +75,32 @@ enum ContextCaptureFailure {
 
 @MainActor
 final class AccessibilityContext {
+    private let isCompositionInputSource: @MainActor () -> Bool
+    private let frontmostApplication: @MainActor () -> NSRunningApplication?
     private var clipboardInsertion: ClipboardInsertion?
     var hasActiveInsertion: Bool { clipboardInsertion?.isActive == true }
 
     func finishShutdown() { clipboardInsertion?.restore() }
     private let logger = Logger(subsystem: "app.ztype.mac", category: "Acceptance")
+    private let captureLogger = Logger(subsystem: "app.ztype.mac", category: "Compatibility")
     private(set) var failure: ContextCaptureFailure?
+    private(set) var diagnostics: CompatibilityDiagnostics?
     private(set) var applicationName = ""
+    private var applicationIdentifier = ""
+    private var diagnosticFocus: AXUIElement?
+    private var diagnosticEditor: AXUIElement?
+    private var enhancedApplication: NSRunningApplication?
     var excluded: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable",
         "com.agilebits.onepassword7", "com.1password.1password",
         "com.apple.keychainaccess"
     ]
+
+    init(isCompositionInputSource: @escaping @MainActor () -> Bool = { AccessibilityContext.compositionInputSource },
+         frontmostApplication: @escaping @MainActor () -> NSRunningApplication? = { NSWorkspace.shared.frontmostApplication }) {
+        self.isCompositionInputSource = isCompositionInputSource
+        self.frontmostApplication = frontmostApplication
+    }
 
     static var trusted: Bool { AXIsProcessTrusted() }
 
@@ -124,17 +138,23 @@ final class AccessibilityContext {
     func captureText() -> TextFieldSnapshot? {
         failure = nil
         applicationName = ""
+        applicationIdentifier = ""
+        diagnosticFocus = nil
+        diagnosticEditor = nil
         guard Self.trusted else { return fail(.noPermission) }
         guard !IsSecureEventInputEnabled() else { return fail(.secureInput) }
-        guard !Self.compositionInputSource else { return fail(.composition) }
-        guard let app = NSWorkspace.shared.frontmostApplication else { return fail(.noApplication) }
+        guard !isCompositionInputSource() else { return fail(.composition) }
+        guard let app = frontmostApplication() else { return fail(.noApplication) }
         applicationName = app.localizedName ?? app.bundleIdentifier ?? ""
+        applicationIdentifier = app.bundleIdentifier ?? ""
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return fail(.ownApplication) }
         guard !excluded.contains(app.bundleIdentifier ?? "") else { return fail(.excluded) }
         let application = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(application, 0.06)
-        guard let focus = elementAttribute(application, kAXFocusedUIElementAttribute) else { return fail(.noField) }
-        guard let element = resolveField(focus) else { return fail(.unsupportedField) }
+        let resolved = focusedField(in: application)
+        guard let focus = diagnosticFocus else { return fail(.noField) }
+        guard let element = resolved?.editor else { return fail(.unsupportedField) }
+        diagnosticEditor = element
         AXUIElementSetMessagingTimeout(element, 0.06)
         guard (attribute(element, kAXSubroleAttribute) as? String) != kAXSecureTextFieldSubrole else {
             return fail(.secureField)
@@ -168,7 +188,36 @@ final class AccessibilityContext {
 
     private func fail<T>(_ reason: ContextCaptureFailure) -> T? {
         failure = reason
+        if !applicationIdentifier.isEmpty,
+           [.unsupportedField, .noSelection, .noText, .noCharacterCount, .noCaret, .noVisibleBounds, .offscreen].contains(reason) {
+            let focus = diagnosticFocus.map(elementDiagnostics)
+            let report = CompatibilityDiagnostics(
+                application: applicationIdentifier, reason: reason.message,
+                focus: focus,
+                editor: diagnosticEditor.flatMap { editor in
+                    if let element = diagnosticFocus, CFEqual(editor, element) { return focus }
+                    return elementDiagnostics(editor)
+                }
+            )
+            if diagnostics != report {
+                captureLogger.notice("Capture failed: \(String(describing: reason), privacy: .public), role: \(report.focus?.role ?? "", privacy: .public)")
+            }
+            diagnostics = report
+        }
         return nil
+    }
+
+    private func elementDiagnostics(_ element: AXUIElement) -> CompatibilityDiagnostics.Element {
+        AXUIElementSetMessagingTimeout(element, 0.01)
+        let deadline = ContinuousClock.now + .milliseconds(25)
+        var names: CFArray?
+        AXUIElementCopyParameterizedAttributeNames(element, &names)
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        return CompatibilityDiagnostics.Element(
+            attribute: { ContinuousClock.now < deadline ? self.attribute(element, $0) : nil },
+            parameters: (names as? [String]) ?? [], valueSettable: settable.boolValue
+        )
     }
 
     private func parameter(_ element: AXUIElement, _ key: String, _ parameter: CFTypeRef) -> CFTypeRef? {
@@ -179,63 +228,152 @@ final class AccessibilityContext {
         return value
     }
 
-    private func textReader(_ element: AXUIElement) -> AccessibleTextReader {
+    func textReader(_ element: AXUIElement, includeChildBounds: Bool = true) -> AccessibleTextReader {
         var names: CFArray?
         AXUIElementCopyParameterizedAttributeNames(element, &names)
         let supported = Set((names as? [String]) ?? [])
         return AccessibleTextReader(attribute: { self.attribute(element, $0) }, parameter: { key, value in
             guard supported.isEmpty || supported.contains(key) else { return nil }
             return self.parameter(element, key, value)
-        })
+        }, boundsFallback: includeChildBounds ? { self.focusedChildBounds(element, range: $0) } : nil)
+    }
+
+    private func focusedChildBounds(_ element: AXUIElement, range: CFRange) -> CGRect? {
+        let reader = textReader(element, includeChildBounds: false)
+        guard let selection = reader.selection(), selection.range.length == 0 else { return nil }
+        var values: CFArray?
+        guard AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, 65, &values) == .success,
+              let children = values as? [AXUIElement], children.count <= 64 else { return nil }
+        let deadline = ContinuousClock.now + .milliseconds(25)
+        var found: CGRect?
+        for child in children {
+            guard ContinuousClock.now < deadline else { return nil }
+            AXUIElementSetMessagingTimeout(child, 0.015)
+            guard attribute(child, kAXRoleAttribute) as? String == kAXStaticTextRole,
+                  attribute(child, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole else { continue }
+            let childReader = textReader(child, includeChildBounds: false)
+            guard let childSelection = childReader.selection(), childSelection.range.length == 0,
+                  let local = AccessibleTextReader.relativeRange(
+                    range, cursor: selection.range.location, childCursor: childSelection.range.location
+                  ) else { continue }
+            let length = min(1600, childSelection.range.location)
+            // Child indices are local, not document offsets. Validate the actual text,
+            // rather than interpreting AXIndexForChildUIElement as a character index.
+            guard let childText = childReader.text(CFRange(
+                location: childSelection.range.location - length, length: length
+            )), let parentText = reader.text(CFRange(
+                location: selection.range.location - length, length: length
+            )), childText == parentText, let rect = childReader.bounds(local),
+                  let fresh = childReader.selection(),
+                  fresh.range.location == childSelection.range.location, fresh.range.length == 0 else { continue }
+            guard found == nil else { return nil }
+            found = rect
+        }
+        guard let fresh = reader.selection(), fresh.range.location == selection.range.location,
+              fresh.range.length == 0 else { return nil }
+        return found
     }
 
     private func isTextField(_ element: AXUIElement) -> Bool {
         let role = attribute(element, kAXRoleAttribute) as? String ?? ""
-        if [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole].contains(role) { return true }
-        guard (attribute(element, "AXEditable") as? Bool) == true else { return false }
-        return attribute(element, kAXSelectedTextRangeAttribute) != nil ||
-            attribute(element, "AXSelectedTextMarkerRange") != nil
+        let editable = attribute(element, "AXEditable") as? Bool
+        if [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole].contains(role) {
+            return editable != false
+        }
+        guard editable == true || ["AXLayoutArea", "AXLayoutItem", kAXGroupRole].contains(role) else { return false }
+        var names: CFArray?
+        AXUIElementCopyParameterizedAttributeNames(element, &names)
+        let supported = Set((names as? [String]) ?? [])
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        let line = attribute(element, kAXInsertionPointLineNumberAttribute) as? NSNumber
+        return AccessibleFieldCapabilities(
+            role: role, editable: editable, valueSettable: settable.boolValue,
+            hasSelection: textReader(element).selection() != nil,
+            hasTextRanges: !supported.isDisjoint(with: [kAXStringForRangeParameterizedAttribute,
+                kAXAttributedStringForRangeParameterizedAttribute, "AXStringForTextMarkerRange"]),
+            hasInsertionLine: line.map { $0.intValue >= 0 && $0.intValue < Int.max } ?? false
+        ).isEditor
+    }
+
+    func focusedField(in application: AXUIElement) -> AccessibleFocusResolver<AXUIElement>.Resolution? {
+        AccessibleFocusResolver(
+            readFocus: {
+                self.diagnosticFocus = self.elementAttribute(application, kAXFocusedUIElementAttribute)
+                return self.diagnosticFocus
+            },
+            resolveEditor: { self.resolveField($0) },
+            enableEnhancedAccessibility: { self.enableEnhancedAccessibility(application, focus: $0) }
+        ).resolve()
+    }
+
+    private func enableEnhancedAccessibility(_ application: AXUIElement, focus: AXUIElement) -> Bool {
+        let role = attribute(focus, kAXRoleAttribute) as? String ?? ""
+        guard [kAXScrollAreaRole, kAXGroupRole, "AXLayoutArea", "AXLayoutItem", "AXPage", "AXWebArea"].contains(role)
+        else { return false }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(application, &pid) == .success,
+              let app = NSRunningApplication(processIdentifier: pid),
+              !excluded.contains(app.bundleIdentifier ?? "") else { return false }
+        if let previous = enhancedApplication, !previous.isTerminated, previous.processIdentifier == pid {
+            return false
+        }
+        // One request per active application, never one per keystroke.
+        enhancedApplication = app
+        let key = "AXEnhancedUserInterface"
+        let enabled = AccessibleFocusResolver<AXUIElement>.requestEnhancement(
+            current: { self.attribute(application, key) as? Bool },
+            isSettable: {
+                var settable: DarwinBoolean = false
+                return AXUIElementIsAttributeSettable(application, key as CFString, &settable) == .success &&
+                    settable.boolValue
+            },
+            enable: {
+                AXUIElementSetAttributeValue(application, key as CFString, kCFBooleanTrue) == .success
+            }
+        )
+        if enabled {
+            captureLogger.notice("Requested enhanced text accessibility for a focused container")
+        }
+        return enabled
     }
 
     func resolveField(_ focus: AXUIElement) -> AXUIElement? {
-        AXUIElementSetMessagingTimeout(focus, 0.04)
-        if (attribute(focus, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole { return focus }
-        if isTextField(focus) { return focus }
-        // Some editors focus a layout/container rather than the editable descendant.
-        // Never search an entire window or pick one of several unrelated editors.
-        let deadline = ContinuousClock.now + .milliseconds(35)
-        var queue: [(AXUIElement, Int)] = [(focus, 0)]
-        var visited: [AXUIElement] = []
-        var candidates: [AXUIElement] = []
-        while !queue.isEmpty, visited.count < 48, ContinuousClock.now < deadline {
-            let (element, depth) = queue.removeFirst()
-            guard !visited.contains(where: { CFEqual($0, element) }) else { continue }
-            visited.append(element)
-            AXUIElementSetMessagingTimeout(element, 0.02)
-            if (attribute(element, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole { return nil }
-            if isTextField(element) {
-                if (attribute(element, kAXFocusedAttribute) as? Bool) == true { return element }
-                if textReader(element).selection() != nil { candidates.append(element) }
-                continue
-            }
-            guard depth < 4 else { continue }
-            var values: CFArray?
-            if AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, 16, &values) == .success,
-               let children = values as? [AXUIElement] {
-                queue.append(contentsOf: children.map { ($0, depth + 1) })
-            }
-        }
-        if candidates.count == 1 { return candidates[0] }
-        var ancestor = focus
-        for _ in 0..<4 {
-            guard ContinuousClock.now < deadline,
-                  let parent = elementAttribute(ancestor, kAXParentAttribute) else { break }
-            if (attribute(parent, kAXRoleAttribute) as? String) == kAXWindowRole { break }
-            ancestor = parent
-            if (attribute(parent, kAXSubroleAttribute) as? String) == kAXSecureTextFieldSubrole { return parent }
-            if isTextField(parent) { return parent }
-        }
-        return nil
+        let deadline = ContinuousClock.now + .milliseconds(50)
+        var classification: [AXUIElement: AccessibleFieldResolver<AXUIElement>.Kind] = [:]
+        let resolver = AccessibleFieldResolver<AXUIElement>(
+            equal: { CFEqual($0, $1) },
+            kind: { element in
+                if let cached = classification[element] { return cached }
+                AXUIElementSetMessagingTimeout(element, 0.02)
+                let kind: AccessibleFieldResolver<AXUIElement>.Kind
+                let role = self.attribute(element, kAXRoleAttribute) as? String ?? ""
+                if self.attribute(element, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole {
+                    kind = .secure
+                } else if [kAXWindowRole, kAXApplicationRole, kAXToolbarRole, kAXMenuBarRole].contains(role) {
+                    kind = .boundary
+                } else if role == "AXWebArea", !self.isTextField(element) {
+                    kind = .boundary
+                } else if [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXLayoutArea", "AXLayoutItem"].contains(role),
+                          self.attribute(element, "AXEditable") as? Bool == false {
+                    kind = .blocked
+                } else { kind = self.isTextField(element) ? .editor : .container }
+                classification[element] = kind
+                return kind
+            },
+            focused: { self.attribute($0, kAXFocusedAttribute) as? Bool == true },
+            hasSelection: { self.textReader($0).selection() != nil },
+            parent: { self.elementAttribute($0, kAXParentAttribute) },
+            children: { element in
+                var values: CFArray?
+                // Do not silently truncate the children and then claim a unique editor.
+                guard AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, 65, &values) == .success
+                else { return [] }
+                return (values as? [AXUIElement]) ?? []
+            },
+            withinBudget: { ContinuousClock.now < deadline }
+        )
+        return resolver.resolve(focus)
     }
 
     func submit(_ text: String, into snapshot: TextFieldSnapshot,

@@ -29,9 +29,10 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
                 .padding(.horizontal, 24)
             HStack(spacing: 18) {
-                metric("上次推理", value: model.latency == 0 ? "—" : String(format: "%.0f ms", model.latency))
+                metric("上次展示", value: model.latency == 0 ? "—" : String(format: "%.0f ms", model.latency))
+                    .help(String(format: "含等待、读取、模型加载及推理；其中推理 %.0f ms", model.inferenceLatency))
                 Divider().frame(height: 28)
-                metric("P95 推理", value: model.p95 == 0 ? "—" : String(format: "%.0f ms", model.p95))
+                metric("P95 展示", value: model.p95 == 0 ? "—" : String(format: "%.0f ms", model.p95))
                 Divider().frame(height: 28)
                 metric("已接受", value: "\(model.accepted)")
                 Divider().frame(height: 28)

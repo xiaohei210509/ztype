@@ -135,4 +135,89 @@ struct AccessibleTextReaderTests {
         #expect(!ContextCaptureFailure.selectedText.mayBeLayoutDelay)
         #expect(!ContextCaptureFailure.composition.mayBeLayoutDelay)
     }
+
+    @Test func selectedTextRangesCanSupplyASingleCaret() throws {
+        let reader = AccessibleTextReader(attribute: { key in
+            key == kAXSelectedTextRangesAttribute
+                ? [AccessibleTextReader.value(CFRange(location: 5, length: 0))!] as CFArray : nil
+        }, parameter: { _, _ in nil })
+        #expect(try #require(reader.selection()).range.location == 5)
+    }
+
+    @Test func multipleCaretsAreNotCollapsedIntoOneSelection() {
+        let reader = AccessibleTextReader(attribute: { key in
+            key == kAXSelectedTextRangesAttribute
+                ? [AccessibleTextReader.value(CFRange(location: 5, length: 0))!,
+                   AccessibleTextReader.value(CFRange(location: 8, length: 0))!] as CFArray : nil
+        }, parameter: { _, _ in nil })
+        #expect(reader.selection() == nil)
+    }
+
+    @Test func unorderedMarkerRangesCanProvideGlyphBounds() throws {
+        let reader = AccessibleTextReader(attribute: { _ in nil }, parameter: { key, value in
+            switch key {
+            case "AXTextMarkerForIndex": return value
+            case "AXTextMarkerRangeForUnorderedTextMarkers": return value
+            case "AXBoundsForTextMarkerRange": return rect(CGRect(x: 130, y: 200, width: 7, height: 16))
+            default: return nil
+            }
+        })
+        #expect(try #require(reader.bounds(CFRange(location: 4, length: 1))).width == 7)
+    }
+
+    @Test func invalidOrdinaryCaretUsesTheSelectedMarkerRange() throws {
+        let markers = "selection" as CFString
+        let reader = AccessibleTextReader(attribute: { _ in nil }, parameter: { key, _ in
+            switch key {
+            case kAXBoundsForRangeParameterizedAttribute: return rect(.zero)
+            case "AXBoundsForTextMarkerRange": return rect(CGRect(x: 130, y: 200, width: 0, height: 16))
+            default: return nil
+            }
+        })
+        let selection = AccessibleTextReader.Selection(range: CFRange(location: 5, length: 0), markerRange: markers)
+        #expect(try #require(reader.caret(selection, before: "hello", start: 0, atEnd: true)).minX == 130)
+    }
+
+    @Test func childGlyphBoundsRecoverAnInvalidContainerRange() throws {
+        var calls = 0
+        let reader = AccessibleTextReader(attribute: { _ in nil }, parameter: { _, _ in nil },
+                                          boundsFallback: { _ in
+            calls += 1
+            return CGRect(x: 130, y: 200, width: 7, height: 16)
+        })
+        let selection = AccessibleTextReader.Selection(range: CFRange(location: 5, length: 0), markerRange: nil)
+        #expect(try #require(reader.caret(selection, before: "hello", start: 0, atEnd: true)).minX == 137)
+        #expect(calls == 2)
+    }
+
+    @Test func validOrdinaryBoundsDoNotScanChildren() {
+        let reader = AccessibleTextReader(attribute: { _ in nil }, parameter: { _, _ in
+            rect(CGRect(x: 130, y: 200, width: 0, height: 16))
+        }, boundsFallback: { _ in
+            Issue.record("The ordinary fast path must not inspect child editors")
+            return nil
+        })
+        #expect(reader.bounds(CFRange(location: 5, length: 0)) != nil)
+    }
+
+    @Test func childRangesUseValidatedLocalCursorOffsets() {
+        let range = AccessibleTextReader.relativeRange(CFRange(location: 33, length: 1), cursor: 34, childCursor: 2)
+        #expect(range?.location == 1)
+        #expect(range?.length == 1)
+        #expect(AccessibleTextReader.relativeRange(CFRange(location: 34, length: 0), cursor: 34, childCursor: 2)?.location == 2)
+        #expect(AccessibleTextReader.relativeRange(CFRange(location: 1, length: 1), cursor: 34, childCursor: 2) == nil)
+        #expect(AccessibleTextReader.relativeRange(CFRange(location: 34, length: 1), cursor: 34, childCursor: 2) == nil)
+        #expect(AccessibleTextReader.relativeRange(CFRange(location: 34, length: 0), cursor: 34, childCursor: 0) == nil)
+    }
+
+    @Test func emptyContextDoesNotFetchTheEntireValue() {
+        let reader = AccessibleTextReader(attribute: { _ in
+            Issue.record("Empty text needs no accessibility value read")
+            return nil
+        }, parameter: { _, _ in
+            Issue.record("Empty text needs no parameterized read")
+            return nil
+        })
+        #expect(reader.text(CFRange(location: 0, length: 0)) == "")
+    }
 }

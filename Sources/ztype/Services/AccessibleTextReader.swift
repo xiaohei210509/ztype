@@ -6,6 +6,7 @@ import ztypeCore
 struct AccessibleTextReader {
     let attribute: (String) -> CFTypeRef?
     let parameter: (String, CFTypeRef) -> CFTypeRef?
+    var boundsFallback: ((CFRange) -> CGRect?)? = nil
 
     struct Selection {
         let range: CFRange
@@ -13,7 +14,12 @@ struct AccessibleTextReader {
     }
 
     func selection() -> Selection? {
+        let ranges = attribute(kAXSelectedTextRangesAttribute) as? [CFTypeRef]
+        if let ranges, ranges.count > 1 { return nil }
         if let range = Self.range(attribute(kAXSelectedTextRangeAttribute)) {
+            return Selection(range: range, markerRange: attribute("AXSelectedTextMarkerRange"))
+        }
+        if let ranges, ranges.count == 1, let range = Self.range(ranges[0]) {
             return Selection(range: range, markerRange: attribute("AXSelectedTextMarkerRange"))
         }
         guard let markers = attribute("AXSelectedTextMarkerRange"),
@@ -24,7 +30,8 @@ struct AccessibleTextReader {
     }
 
     func characterCount() -> Int? {
-        if let count = attribute(kAXNumberOfCharactersAttribute) as? NSNumber, count.intValue >= 0 {
+        if let count = attribute(kAXNumberOfCharactersAttribute) as? NSNumber,
+           count.intValue >= 0, count.intValue < Int.max {
             return count.intValue
         }
         if let end = attribute("AXEndTextMarker"), let count = index(end) { return count }
@@ -33,6 +40,7 @@ struct AccessibleTextReader {
 
     func text(_ range: CFRange) -> String? {
         guard let value = Self.value(range) else { return nil }
+        if range.length == 0 { return "" }
         if let plain = parameter(kAXStringForRangeParameterizedAttribute, value) as? String,
            (plain as NSString).length == range.length { return plain }
         if let rich = parameter(kAXAttributedStringForRangeParameterizedAttribute, value) as? NSAttributedString,
@@ -75,9 +83,9 @@ struct AccessibleTextReader {
         guard let value = Self.value(range) else { return nil }
         if let rect = Self.rect(parameter(kAXBoundsForRangeParameterizedAttribute, value)) { return rect }
         if let markers = markerRange(range) {
-            return Self.rect(parameter("AXBoundsForTextMarkerRange", markers))
+            if let rect = Self.rect(parameter("AXBoundsForTextMarkerRange", markers)) { return rect }
         }
-        return nil
+        return boundsFallback?(range).flatMap { InlineGeometry.valid($0) ? $0 : nil }
     }
 
     func attributedText(_ range: CFRange) -> NSAttributedString? {
@@ -103,7 +111,16 @@ struct AccessibleTextReader {
               let end = parameter("AXTextMarkerForIndex", NSNumber(value: range.location + range.length)) else {
             return nil
         }
-        return parameter("AXTextMarkerRangeForTextMarkers", [start, end] as CFArray)
+        let markers = [start, end] as CFArray
+        return parameter("AXTextMarkerRangeForTextMarkers", markers) ??
+            parameter("AXTextMarkerRangeForUnorderedTextMarkers", markers)
+    }
+
+    static func relativeRange(_ range: CFRange, cursor: Int, childCursor: Int) -> CFRange? {
+        guard value(range) != nil, cursor >= 0, childCursor > 0, childCursor <= cursor,
+              range.location >= cursor - childCursor,
+              range.location + range.length <= cursor else { return nil }
+        return CFRange(location: range.location - (cursor - childCursor), length: range.length)
     }
 
     static func value(_ range: CFRange) -> AXValue? {

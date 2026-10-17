@@ -27,9 +27,10 @@ public struct CompletionContext: Equatable, Sendable {
 
     public var eligible: Bool {
         let tail = String(before.suffix(300))
-        let han = tail.unicodeScalars.filter { (0x3400...0x9fff).contains($0.value) }.count
-        let enoughText = (before.count >= 8 &&
-            tail.unicodeScalars.filter({ CharacterSet.letters.contains($0) }).count >= 5) || han >= 4
+        let han = tail.unicodeScalars.filter(CompletionLanguage.isHan).count
+        let letters = tail.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        let shortBoundary = before.last.map { $0.isWhitespace || $0.isPunctuation } == true
+        let enoughText = letters >= 5 || han >= 4 || (letters >= 2 && shortBoundary)
         guard enoughText, before.last != "\n",
               !tail.contains("-----BEGIN"),
               !tail.contains("sk-proj-"), !tail.contains("Bearer "),

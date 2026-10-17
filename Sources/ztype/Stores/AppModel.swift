@@ -65,12 +65,14 @@ final class AppModel: ObservableObject {
     @Published var permission = AccessibilityContext.trusted
     @Published var inputPermission = CGPreflightListenEventAccess()
     @Published var keyboardMonitoring = KeyboardMonitoringStatus.inactive
+    @Published var compatibilityDiagnostics: CompatibilityDiagnostics?
     @Published var suggestion = ""
     @Published var generated = 0
     @Published var accepted = 0
     @Published var rejected = 0
     @Published var latency: Double = 0
     @Published var p95: Double = 0
+    @Published var inferenceLatency: Double = 0
     @Published var mode: EnergyMode {
         didSet {
             UserDefaults.standard.set(mode.rawValue, forKey: "energyMode")
@@ -162,6 +164,19 @@ final class AppModel: ObservableObject {
     }
 
     var localSuggestion: String { localSnapshot == nil ? "" : suggestion }
+    var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
+    var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "development" }
+
+    func copyCompatibilityDiagnostics() {
+        guard !accessibility.hasActiveInsertion, let compatibilityDiagnostics else { return }
+        let text = compatibilityDiagnostics.text(
+            version: version, build: build, accessibility: permission,
+            inputMonitoring: inputPermission, tabStatus: keyboardMonitoring.title
+        )
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
     func startGlobal() {
         globalRequested = true
@@ -277,6 +292,7 @@ final class AppModel: ObservableObject {
         if let blockedAt, blockedAt.duration(to: .now) < .seconds(1) { return }
         if ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical { return }
         predictionScheduleCount += 1
+        let scheduledAt = ContinuousClock.now
         let generation = revision
         let currentMode = effectiveMode
         let elapsed = lastRequest.duration(to: .now)
@@ -299,10 +315,12 @@ final class AppModel: ObservableObject {
                           NSWorkspace.shared.frontmostApplication?.processIdentifier == capturePID else { return }
                     field = self.accessibility.capture()
                 }
+                if let field { self.monitor.observe(field.textState) }
                 let local = global ? nil : self.localCapture?()
                 guard let context = field?.context ?? local?.context else {
                     if generation == self.revision {
                         if global {
+                            self.compatibilityDiagnostics = self.accessibility.diagnostics
                             let reason = self.accessibility.failure?.message ?? "无法读取输入框"
                             let app = self.accessibility.applicationName
                             self.status = app.isEmpty ? reason : "\(app) · \(reason)"
@@ -333,11 +351,6 @@ final class AppModel: ObservableObject {
                           fresh.context == local.context, fresh.range == local.range else { return }
                 }
                 self.generated += 1
-                self.latency = result.milliseconds
-                self.timings.append(result.milliseconds)
-                if self.timings.count > 100 { self.timings.removeFirst() }
-                let sorted = self.timings.sorted()
-                self.p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
                 guard let suggestion = CompletionPolicy.filter(result.text, context: context) else {
                     self.rejected += 1
                     self.status = "候选已过滤"
@@ -353,6 +366,10 @@ final class AppModel: ObservableObject {
                 }
                 if let field { self.recordGlobalCandidate(suggestion, field: field) }
                 else if let local { self.recordLocalCandidate(suggestion, snapshot: local) }
+                let elapsed = scheduledAt.duration(to: .now)
+                let milliseconds = Double(elapsed.components.seconds) * 1000 +
+                    Double(elapsed.components.attoseconds) / 1e15
+                self.recordDisplayLatency(milliseconds, inference: result.milliseconds)
             } catch is CancellationError {
             } catch {
                 if generation == self.revision {
@@ -360,6 +377,15 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func recordDisplayLatency(_ milliseconds: Double, inference: Double) {
+        latency = milliseconds
+        inferenceLatency = inference
+        timings.append(milliseconds)
+        if timings.count > 100 { timings.removeFirst() }
+        let sorted = timings.sorted()
+        p95 = sorted[min(sorted.count - 1, Int(ceil(Double(sorted.count) * 0.95)) - 1)]
     }
 
     @discardableResult

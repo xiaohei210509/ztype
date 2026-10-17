@@ -25,6 +25,35 @@ struct GlobalAcceptanceTests {
         Issue.record("Acceptance did not finish within the test deadline")
     }
 
+    @Test func chineseTabsKeepTheOriginalRemainderAndUTF16Receipts() async throws {
+        var current = state("明天我们会", location: 5)
+        var parts: [String] = []
+        let model = AppModel(acceptanceIO: GlobalAcceptanceIO(frontmostPID: { 12345 },
+            captureText: { current }, submit: { text, expected in
+                #expect(expected.matches(current))
+                parts.append(text)
+                current = state(current.context.before + text,
+                                location: current.range.location + (text as NSString).length)
+                return TextSubmission()
+            }, captureField: { candidate(current) }))
+        defer { model.shutdown() }
+        model.globalEnabled = true
+        let original = "制定解决方案，然后再讨论。"
+        model.recordGlobalCandidate(original, field: candidate(current))
+        for index in 1...40 {
+            #expect(model.accept(full: false, global: true))
+            try await waitUntil {
+                model.accepted == index && ["已接受", "候选可用"].contains(model.status)
+            }
+            #expect(model.predictionScheduleCount == 0)
+            if model.suggestion.isEmpty { break }
+        }
+        #expect(model.suggestion.isEmpty)
+        #expect(parts.count > 2)
+        #expect(parts.joined() == original)
+        #expect(current.context.before == "明天我们会" + original)
+    }
+
     @Test func aTapWithoutKeyboardEventsCannotPublishAGhostOrClaimAcceptance() {
         let model = AppModel(acceptanceIO: GlobalAcceptanceIO(frontmostPID: { 12345 },
             captureText: { nil }, submit: { _, _ in

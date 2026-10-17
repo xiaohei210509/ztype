@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 public enum CompletionPolicy {
     public static func filter(_ raw: String, context: CompletionContext, limit: Int = 10) -> String? {
@@ -58,6 +59,23 @@ public enum CompletionPolicy {
     public static func nextWord(in suggestion: String) -> String {
         guard let first = suggestion.firstIndex(where: { !$0.isWhitespace }) else { return suggestion }
         let remainder = suggestion[first...]
+        if remainder.unicodeScalars.contains(where: CompletionLanguage.isHan) {
+            let tokenizer = NLTokenizer(unit: .word)
+            tokenizer.string = suggestion
+            var wordEnd: String.Index?
+            tokenizer.enumerateTokens(in: first..<suggestion.endIndex) { range, _ in
+                wordEnd = range.upperBound
+                return false
+            }
+            if var end = wordEnd {
+                // Keep closing punctuation with the accepted word, not as a separate Tab.
+                while end < suggestion.endIndex, suggestion[end].isPunctuation {
+                    end = suggestion.index(after: end)
+                }
+                return String(suggestion[..<end])
+            }
+            return String(suggestion[...first])
+        }
         guard let boundary = remainder.firstIndex(where: \.isWhitespace) else { return suggestion }
         return String(suggestion[..<boundary])
     }

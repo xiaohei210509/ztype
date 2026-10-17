@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>ztype accessibility fixture</title>
+<style>
+  body { margin: 32px; font: 18px system-ui; color: #161616; background: #fff; }
+  label { display: block; margin: 24px 0 8px; }
+  textarea, input, [contenteditable] { box-sizing: border-box; width: 640px; padding: 12px; font: inherit; }
+  [contenteditable] { min-height: 160px; border: 1px solid #999; white-space: pre-wrap; }
+</style>
+<label for="plain">Plain input</label>
+<input id="plain" value="Please let me know if you ">
+<label for="multiline">Multiline input</label>
+<textarea id="multiline" rows="4">Please let me know if you </textarea>
+<label for="rich">Rich editor</label>
+<div id="rich" contenteditable="true" role="textbox" aria-multiline="true">Haiku<br>The sun is a bright ball.<br>T</div>
+<label for="canvas">Unlabelled contenteditable</label>
+<div id="canvas" contenteditable="true">Please let me know if you </div>
+</html>

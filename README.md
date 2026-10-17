@@ -22,12 +22,15 @@ ztype is an independent project, not affiliated with Cotypist.
 - Menu-bar operation, an optional trial editor, and no persistent Dock icon.
 - Debouncing, cancellation, low-power handling, thermal pauses, and idle unloading.
 - Capability-based Accessibility integration, not a list of app-specific patches.
+- Token-budgeted nearby context, including long Chinese drafts.
+- System word segmentation for Chinese and mixed-language Tab acceptance.
+- Event-triggered, bounded recovery of transient Accessibility observer failures.
 
 ## Install
 
 Requires an **Apple Silicon Mac running macOS 14 or later**.
 
-1. Download `ztype-0.1.0-arm64.dmg` from [Releases](../../releases/latest).
+1. Download `ztype-0.1.3-arm64.dmg` from [Releases](../../releases/latest).
 2. Open the disk image and drag `ztype.app` to `Applications`.
 3. Launch the installed app, not the copy inside the disk image.
 4. Enable cross-app completion and grant Accessibility and Input Monitoring
@@ -36,7 +39,7 @@ Requires an **Apple Silicon Mac running macOS 14 or later**.
 The disk image includes the inference runtime and local model. No separate model
 download or cloud API key is required.
 
-**Signing:** the initial public build is ad-hoc signed and is **not notarized**.
+**Signing:** the public build is ad-hoc signed and is **not notarized**.
 macOS may block the first launch. Verify the download and the accompanying
 SHA-256 file, and follow [Apple's guidance](https://support.apple.com/en-us/102445)
 only if you trust the app. Do not disable Gatekeeper. Ad-hoc-signed updates may
@@ -89,11 +92,39 @@ Cross-app behavior depends on the editor's Accessibility support. The shared
 readers and acceptance path have regression coverage, but this does not establish
 compatibility with every application.
 
+When normal resolution only exposes a focused layout container, ztype 0.1.2
+requests enhanced Accessibility only if the application explicitly exposes a
+disabled, writable `AXEnhancedUserInterface` attribute, then refreshes focus.
+Ordinary editors retain their existing fast path. This bounded fallback does not
+change system permissions or add background polling.
+
+Version 0.1.3 tracks notification registration results and retries transient
+observer/focus failures at most three times after an input or focus event.
+Unsupported notifications are not repeatedly registered. Recovery stops on
+success, application changes, or shutdown; it never becomes idle polling.
+Existing accepted-candidate remainders remain subject to the same text checks.
+
+Prompt assembly keeps the trusted template and reserves generation tokens.
+Oversized drafts use a smaller nearby inference window, preserving Unicode
+boundaries and the beginning of text after the caret. Original editor snapshots
+are never cropped for acceptance validation. Short boundary-ended prefixes such
+as `Hi,` are eligible; ambiguous single-letter prefixes remain inactive.
+
+Optional read-only Pages fixture tests are documented in the
+[Chinese compatibility diagnostics](README.zh-CN.md#兼容性诊断). Reading a fixture
+successfully is not proof of foreground suggestion display or Tab acceptance.
+
 Composition-based input methods are conservatively paused in cross-app mode to
 avoid conflicting with IME confirmation keys. The trial editor detects marked
 text. Full Chinese IME compatibility is not yet established. Cold-start model
 loading adds latency. Intel Macs, Windows, Linux, automatic updates, and login
 items are not currently supported by the release.
+
+The UI's display-latency samples include debounce, capture, cold model loading,
+inference and final validation, measured through candidate publication rather
+than physical screen presentation. P95 uses the last 100 displayed candidates.
+The synthetic benchmark reports inference latency, prompt tokens and context
+cropping separately, and is not an end-to-end compatibility or power benchmark.
 
 See the [detailed Chinese documentation](README.zh-CN.md) for architecture,
 resource policies, permission diagnostics, and reproducible benchmarks.

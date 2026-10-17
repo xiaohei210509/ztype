@@ -3,15 +3,20 @@ import Foundation
 public struct InferenceResult: Sendable {
     public let text: String
     public let milliseconds: Double
+    public let promptTokens: Int
+    public let contextWasTrimmed: Bool
+    public let stopReason: String
 }
 
-public enum InferenceError: LocalizedError {
+public enum InferenceError: LocalizedError, Equatable {
     case invalidResponse
     case server(Int)
+    case contextBudget
     public var errorDescription: String? {
         switch self {
         case .invalidResponse: return "Local engine returned an invalid response."
         case .server(let status): return "Local engine HTTP \(status)."
+        case .contextBudget: return "上下文无法安全缩减至模型预算 · 已跳过"
         }
     }
 }
@@ -45,26 +50,46 @@ public actor InferenceClient {
         if boundary == nil {
             boundary = try await tokenize(ContinuationProtocol.boundary, special: true).map(\.id)
         }
-        let document = try await tokenize(ContinuationProtocol.document(context), special: false).map(\.id)
-        let pieces = try await tokenize(context.before, special: false, withPieces: true)
-        var draft = pieces.map(\.id)
-        let healing = ContinuationProtocol.healingPrefix(for: context, lastPiece: pieces.last?.piece ?? "")
-        if !healing.isEmpty { draft.removeLast() }
-        let prompt = (headers[language] ?? []) + document + (boundary ?? []) + draft
         let budget = max(1, min(tokens, 24))
-        // Refuse server-side context shifting, which could separate the draft from its instructions.
-        guard prompt.count + budget < 2048 else {
-            return InferenceResult(text: "", milliseconds: Self.milliseconds(since: start))
+        let header = headers[language] ?? []
+        let separator = boundary ?? []
+        let available = 2048 - header.count - separator.count - budget - 1
+        guard available > 0 else { throw InferenceError.contextBudget }
+        var window = context
+        // Only the inference window changes; AX validation keeps the original snapshot.
+        for _ in 0..<6 {
+            try Task.checkCancellation()
+            let document = try await tokenize(ContinuationProtocol.document(window), special: false).map(\.id)
+            let pieces = try await tokenize(window.before, special: false, withPieces: true)
+            var draft = pieces.map(\.id)
+            let healing = ContinuationProtocol.healingPrefix(for: window, lastPiece: pieces.last?.piece ?? "")
+            if !healing.isEmpty { draft.removeLast() }
+            let variableCount = document.count + draft.count
+            if variableCount <= available {
+                let prompt = header + document + separator + draft
+                let body = Request(prompt: prompt, n_predict: budget,
+                                   grammar: healing.isEmpty && language != .english ? nil :
+                                    try ContinuationProtocol.grammar(for: healing, language: language))
+                let result: Response = try await send("completion", body: body)
+                let text = try ContinuationProtocol.continuation(
+                    content: result.content, healing: healing, stop: result.stop_type,
+                    stoppingWord: result.stopping_word, truncated: result.truncated
+                )
+                return InferenceResult(text: text, milliseconds: Self.milliseconds(since: start),
+                                       promptTokens: prompt.count, contextWasTrimmed: window != context,
+                                       stopReason: result.truncated ? "context-shift" : result.stop_type)
+            }
+            let ratio = min(0.8, Double(available) / Double(variableCount) * 0.9)
+            let beforeCount = max(1, Int(Double(window.before.count) * ratio))
+            let afterCount = min(64, Int(Double(window.after.count) * ratio))
+            let smaller = CompletionContext(
+                before: String(window.before.suffix(beforeCount)), after: String(window.after.prefix(afterCount)),
+                application: context.application, inputLanguage: context.inputLanguage
+            )
+            guard smaller != window else { throw InferenceError.contextBudget }
+            window = smaller
         }
-        let body = Request(prompt: prompt, n_predict: budget,
-                           grammar: healing.isEmpty && language != .english ? nil :
-                            try ContinuationProtocol.grammar(for: healing, language: language))
-        let result: Response = try await send("completion", body: body)
-        let text = try ContinuationProtocol.continuation(
-            content: result.content, healing: healing, stop: result.stop_type,
-            stoppingWord: result.stopping_word, truncated: result.truncated
-        )
-        return InferenceResult(text: text, milliseconds: Self.milliseconds(since: start))
+        throw InferenceError.contextBudget
     }
 
     private func tokenize(_ content: String, special: Bool, withPieces: Bool = false) async throws -> [Piece] {

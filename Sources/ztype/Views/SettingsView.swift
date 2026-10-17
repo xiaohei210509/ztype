@@ -25,8 +25,16 @@ struct SettingsView: View {
                 TextEditor(text: $model.excludedText).font(.system(.body, design: .monospaced))
                     .frame(height: 88)
             }
+            Section("诊断") {
+                LabeledContent("版本", value: "\(model.version) (\(model.build))")
+                Button { model.copyCompatibilityDiagnostics() } label: {
+                    Label("复制诊断", systemImage: "doc.on.doc")
+                }
+                .disabled(model.compatibilityDiagnostics == nil)
+                .help("复制最近一次跨应用读取失败的接口信息，不包含正文、网址或剪贴板内容")
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 550)
+        .frame(width: 500, height: 650)
     }
 }

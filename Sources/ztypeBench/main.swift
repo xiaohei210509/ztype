@@ -10,7 +10,12 @@ struct ztypeBench {
             return
         }
         let client = InferenceClient(port: port, key: args[2])
+        let longDraft = String((1...30).map {
+            "第\($0)轮测试检查异步通知、AXTextMarker、UTF-16 光标、Qwen token 预算和剪贴板恢复。"
+        }.joined().suffix(1700)) + "我们需要先确认问题的原因，然后再"
         let cases: [CompletionContext] = [
+            .init(before: "Hi,"),
+            .init(before: "你好，"),
             .init(before: "hi, today"),
             .init(before: "hi, today's"),
             .init(before: "hi today"),
@@ -34,7 +39,10 @@ struct ztypeBench {
             .init(before: "请告诉我"),
             .init(before: "我们需要先确认问题的原因，然后再"),
             .init(before: "这次先不要发布，等测试"),
-            .init(before: "这个 API 的返回值是")
+            .init(before: "这个 API 的返回值是"),
+            .init(before: String(repeating: "这份报告讨论的是本地输入补全的速度与可靠性。", count: 75) +
+                  "我们需要先确认问题的原因，然后再", after: "，不要直接发布。"),
+            .init(before: longDraft, after: "，不要直接发布。")
         ]
         var times: [Double] = []
         var displayed = 0
@@ -45,13 +53,17 @@ struct ztypeBench {
             let filtered = CompletionPolicy.filter(result.text, context: context)
             if filtered != nil { displayed += 1 }
             evidence.append(Evidence(before: context.before, after: context.after, raw: result.text,
-                                     displayed: filtered, milliseconds: result.milliseconds))
-            print(String(format: "%.0f ms | %@ | %@", result.milliseconds,
-                         context.before, filtered ?? "[filtered: \(result.text)]"))
+                                     displayed: filtered, milliseconds: result.milliseconds,
+                                     promptTokens: result.promptTokens, contextWasTrimmed: result.contextWasTrimmed,
+                                     stopReason: result.stopReason))
+            print(String(format: "%.0f ms | %d tokens%@ [%@] | %@ | %@", result.milliseconds,
+                         result.promptTokens, result.contextWasTrimmed ? " (trimmed)" : "",
+                         result.stopReason,
+                         String(context.before.suffix(100)), filtered ?? "[filtered: \(result.text)]"))
         }
         let sorted = times.sorted()
         print(String(format: "p50=%.0f ms p95=%.0f ms candidates=%d/%d",
-                     sorted[sorted.count / 2], sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))],
+                     sorted[sorted.count / 2], sorted[Int(ceil(Double(sorted.count) * 0.95)) - 1],
                      displayed, cases.count))
         if args.count == 4 {
             let encoder = JSONEncoder()
@@ -66,5 +78,8 @@ struct ztypeBench {
         let raw: String
         let displayed: String?
         let milliseconds: Double
+        let promptTokens: Int
+        let contextWasTrimmed: Bool
+        let stopReason: String
     }
 }
